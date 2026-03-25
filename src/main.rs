@@ -5,6 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{prelude::*, widgets::*, style::Color};
+use std::time::{Duration, Instant};
 
 #[derive(PartialEq)]
 enum Chrono {
@@ -18,6 +19,7 @@ struct App {
     chrono_state: Chrono,
 	messages: Vec<String>,
     list_state: ListState,
+    start_time: Option<Instant>,
 }
 
 impl App {
@@ -27,12 +29,19 @@ impl App {
             chrono_state: Chrono::Stopped, // On démarre à l'arrêt
             messages: Vec::new(),
             list_state: ListState::default(),
+            start_time: None,
         }
     }
 
-    fn start_chrono(&mut self) {
-        self.chrono_state = Chrono::Started;
-    }
+	fn start_chrono(&mut self) {
+		self.chrono_state = Chrono::Started;
+		self.start_time = Some(Instant::now());
+	}
+
+	fn stop_chrono(&mut self) {
+		self.chrono_state = Chrono::Stopped;
+		self.start_time = None;
+	}
 
     fn scroll_to_bottom(&mut self) {
         if !self.messages.is_empty() {
@@ -76,6 +85,8 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new();
 
+	let tick_rate = Duration::from_millis(100); // On vérifie 10 fois par seconde
+	let mut last_tick = Instant::now();
     loop {
         terminal.draw(|f| {
             // 1. DÉFINITION DU LAYOUT
@@ -96,10 +107,21 @@ fn main() -> io::Result<()> {
                 .constraints(constraints)
                 .split(f.size());
 
+			// le if let ici nous dis, est-ce que app.start_time est une variante de Some ? Si oui on sort l'élément dedans et on le nomme start
+			// ici l'élément dedans est un Instant
+			let time_display = if let Some(start) = app.start_time {
+				let elapsed = start.elapsed().as_secs();
+				let mins = elapsed / 60;
+				let secs = elapsed % 60;
+				format!("{:02}:{:02}", mins, secs)
+			} else {
+				"00:00".to_string()
+			};
+
             // 2. CRÉATION DES WIDGETS (On les crée ICI pour qu'ils existent)
-            let header = Paragraph::new("🦊 FOCUS-FOX CLI | Mode: Travail")
-                .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
-                .block(Block::default().borders(Borders::ALL).title(" Statut "));
+            let header = Paragraph::new(format!("🦊 FOCUS-FOX | Temps : {}", time_display))
+				.style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+				.block(Block::default().borders(Borders::ALL).title(" Statut "));
 
             let items = [
                 ListItem::new("1. Démarrer Focus"),
@@ -120,7 +142,7 @@ fn main() -> io::Result<()> {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
                 );
-
+			
             // ATTENTION : On utilise render_stateful_widget ici !
             /*
             fn render_stateful_widget<W, S>(
@@ -153,48 +175,60 @@ fn main() -> io::Result<()> {
             }
         })?;
 
+		let timeout = tick_rate
+			.checked_sub(last_tick.elapsed()) // check si on peut faire tickrate - last_tick.elapsed(), si oui unwrap, sinon on met 0 et on rattrape le retard
+			.unwrap_or_else(|| Duration::from_secs(0));
+
         // GESTION DU CLAVIER
-        /*
-        enum Event {
-            Key(KeyEvent),   // Transporte les détails de la touche
-            Mouse(MouseEvent), // Transporte les détails de la souris
-            Resize(u16, u16),  // Transporte la nouvelle taille
-        }
-        */
-        if let Event::Key(key) = event::read()? { // event::read()? c pour dire, j'ai plus rien à afficher tant que l'user n'écrit rien.
-            if key.kind == KeyEventKind::Press { // KeyEventKind::Press permet d'éviter l'envoi de 2 signaux (touche appuyé et touche relâchée)
-                match key.code { // check ce qu'on a appuyé
-                    KeyCode::Char(c) => app.input.push(c),
-                    KeyCode::Backspace => { app.input.pop(); },
-                    KeyCode::Up => app.scroll_up(),
-                    KeyCode::Down => app.scroll_down(),
-                    KeyCode::Enter => {
-                        let user_input = app.input.trim();
-                        if !user_input.is_empty() {
-                            app.messages.push(format!("> {}", user_input));
-                            match user_input {
-                                "start" => {
-                                    app.start_chrono();
-                                    app.messages.push("🦊 Focus-Fox: C'est parti ! Travaille bien.".to_string());
-                                },
-                                "stop" => {
-                                    app.chrono_state = Chrono::Stopped;
-                                    app.messages.push("🦊 Focus-Fox: Repos mérité !".to_string());
-                                },
-                                _ => {
-                                    app.messages.push(format!("⚠️ Commande inconnue: {}", user_input));
-                                }
-                            }
-                            app.scroll_to_bottom();
-                        }
-                        app.input.clear();
-                    }
-                    KeyCode::Esc => break,
-                    _ => {}
-                }
-            }
-        }
-    }
+        
+		// permet de check pendant les 100ms si l'user a appuyé sur une touche, sinon on continue le loop pour faire le rendu du chrono
+		// c'est pour éviter de bloquer le rendu du chrono en attendant une entrée clavier.
+		if event::poll(timeout)? {
+			/*
+			enum Event {
+				Key(KeyEvent),   // Transporte les détails de la touche
+				Mouse(MouseEvent), // Transporte les détails de la souris
+				Resize(u16, u16),  // Transporte la nouvelle taille
+			}
+			*/
+			if let Event::Key(key) = event::read()? { // event::read()? c pour dire, j'ai plus rien à afficher tant que l'user n'écrit rien.
+				if key.kind == KeyEventKind::Press { // KeyEventKind::Press permet d'éviter l'envoi de 2 signaux (touche appuyé et touche relâchée)
+					match key.code { // check ce qu'on a appuyé
+						KeyCode::Char(c) => app.input.push(c),
+						KeyCode::Backspace => { app.input.pop(); },
+						KeyCode::Up => app.scroll_up(),
+						KeyCode::Down => app.scroll_down(),
+						KeyCode::Enter => {
+							let user_input = app.input.trim();
+							if !user_input.is_empty() {
+								app.messages.push(format!("> {}", user_input));
+								match user_input {
+									"start" => {
+										app.start_chrono();
+										app.messages.push("🦊 Focus-Fox: C'est parti ! Travaille bien.".to_string());
+									},
+									"stop" => {
+										app.stop_chrono();
+										app.messages.push("🦊 Focus-Fox: Repos mérité !".to_string());
+									},
+									_ => {
+										app.messages.push(format!("⚠️ Commande inconnue: {}", user_input));
+									}
+								}
+								app.scroll_to_bottom();
+							}
+							app.input.clear();
+						}
+						KeyCode::Esc => break,
+						_ => {}
+					}
+				}
+			}
+		}
+		if last_tick.elapsed() >= tick_rate {
+			last_tick = Instant::now();
+		}
+	}
 
     // CLEANUP
     disable_raw_mode()?;
