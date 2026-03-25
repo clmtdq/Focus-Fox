@@ -82,4 +82,4 @@ cargo test
 
 ## Licence
 
-MIT
+Ce projet est sous licence MIT. Voir le fichier LICENSE.
