@@ -7,83 +7,19 @@ use crossterm::{
 use ratatui::{prelude::*, widgets::*, style::Color};
 use std::time::{Duration, Instant};
 
-#[derive(PartialEq)]
-enum Chrono {
-    Started,
-    Paused,
-    Stopped,
-}
+mod app;
 
-struct App {
-    input: String,
-    chrono_state: Chrono,
-	messages: Vec<String>,
-    list_state: ListState,
-    start_time: Option<Instant>,
-}
+use app::*;
 
-impl App {
-    fn new() -> App {
-        App {
-            input: String::new(),
-            chrono_state: Chrono::Stopped, // On démarre à l'arrêt
-            messages: Vec::new(),
-            list_state: ListState::default(),
-            start_time: None,
-        }
-    }
-
-	fn start_chrono(&mut self) {
-		self.chrono_state = Chrono::Started;
-		self.start_time = Some(Instant::now());
-	}
-
-	fn stop_chrono(&mut self) {
-		self.chrono_state = Chrono::Stopped;
-		self.start_time = None;
-	}
-
-    fn scroll_to_bottom(&mut self) {
-        if !self.messages.is_empty() {
-            self.list_state.select(Some(self.messages.len() - 1));
-        }
-    }
-
-    fn scroll_up(&mut self) {
-        if !self.messages.is_empty() {
-            let i = match self.list_state.selected() {
-                Some(i) => if i == 0 { 0 } else { i - 1 },
-                None => 0,
-            };
-            self.list_state.select(Some(i)); // on va changer la variable sélectionné afin de pointer vers un autre message
-        }
-    }
-
-    fn scroll_down(&mut self) {
-        if !self.messages.is_empty() {
-            let i = match self.list_state.selected() {
-                Some(i) => {
-                    if i >= self.messages.len() - 1 {
-                        self.messages.len() - 1
-                    } else {
-                        i + 1
-                    }
-                }
-                None => 0,
-            };
-            self.list_state.select(Some(i));
-        }
-    }
-}
-
-fn main() -> io::Result<()> {
+#[tokio::main]
+async fn main() -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::new();
+    let mut app = app::App::new();
 
 	let tick_rate = Duration::from_millis(100); // On vérifie 10 fois par seconde
 	let mut last_tick = Instant::now();
@@ -110,13 +46,20 @@ fn main() -> io::Result<()> {
 			// le if let ici nous dis, est-ce que app.start_time est une variante de Some ? Si oui on sort l'élément dedans et on le nomme start
 			// ici l'élément dedans est un Instant
 			let time_display = if let Some(start) = app.start_time {
-				let elapsed = start.elapsed().as_secs();
-				let mins = elapsed / 60;
-				let secs = elapsed % 60;
-				format!("{:02}:{:02}", mins, secs)
-			} else {
-				"00:00".to_string()
-			};
+                let elapsed = start.elapsed();
+                
+                if elapsed >= app.focus_duration {
+                    "00:00 - FINI ! 🦊".to_string()
+                } else {
+                    let remaining = app.focus_duration - elapsed;
+                    let total_secs = remaining.as_secs();
+                    format!("{:02}:{:02}", total_secs / 60, total_secs % 60)
+                }
+            } else {
+                // On calcule l'affichage basé sur la durée réglée, même à l'arrêt
+                let total_secs = app.focus_duration.as_secs();
+                format!("{:02}:{:02}", total_secs / 60, total_secs % 60)
+            };
 
             // 2. CRÉATION DES WIDGETS (On les crée ICI pour qu'ils existent)
             let header = Paragraph::new(format!("🦊 FOCUS-FOX | Temps : {}", time_display))
@@ -211,6 +154,22 @@ fn main() -> io::Result<()> {
 										app.stop_chrono();
 										app.messages.push("🦊 Focus-Fox: Repos mérité !".to_string());
 									},
+									"task set" => {
+										app.messages.push("🦊 Focus-Fox: Tâche ajoutée !".to_string());
+									}
+                                    s if s.starts_with("change ") => {
+                                        if let Some(reste) = s.strip_prefix("change ") {
+                                            match reste.trim().parse::<u64>() {
+                                                Ok(mins) => {
+                                                    app.change_duration(mins);
+                                                    app.messages.push(format!("🦊 Focus-Fox: Durée modifiée à {} min !", mins));
+                                                }
+                                                Err(_) => {
+                                                    app.messages.push("⚠️ Focus-Fox: Il me faut un nombre de minutes valide !".to_string());
+                                                }
+                                            }
+                                        }
+                                    },
 									_ => {
 										app.messages.push(format!("⚠️ Commande inconnue: {}", user_input));
 									}
